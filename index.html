@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Silly South Park Derp Monkey Game</title>
+    <style>
+        body { 
+            margin: 0; 
+            background: #0d0c1d; 
+            color: #fff; 
+            font-family: 'Arial Black', Impact, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            overflow: hidden; 
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        canvas { 
+            border: 6px solid #000; 
+            background: #0f0e26; 
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.9); 
+            display: block; 
+            width: 100%;
+            height: auto;
+            aspect-ratio: 800 / 600;
+        }
+        #ui-info { 
+            margin-top: 10px; 
+            font-size: 13px; 
+            color: #ff79c6; 
+            text-align: center; 
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="ui-info">Desktop: A/D or Arrows. Mobile: Hold bottom left/right halves to steer!</div>
+</div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const STATE_PLAYING = "PLAYING";
+const STATE_GAMEOVER = "GAMEOVER";
+let gameState = STATE_PLAYING;
+
+const player = {
+    x: 400, y: 500, width: 64, height: 64, speed: 9.5,
+    form: "MONKEY", 
+    bananas: 0, score: 0, lives: 3, maxLives: 3,
+    fireCooldown: 0, fireRateTicks: 20, 
+    wheelRotation: 0,
+    animationTick: 0
+};
+
+const keys = { ArrowLeft: false, ArrowRight: false, KeyA: false, KeyD: false };
+const mobileControls = { left: false, right: false };
+
+window.addEventListener('keydown', (e) => { 
+    if (e.code in keys) { keys[e.code] = true; e.preventDefault(); } 
+    if (gameState === STATE_GAMEOVER) resetGame();
+});
+window.addEventListener('keyup', (e) => { if (e.code in keys) { keys[e.code] = false; e.preventDefault(); } });
+
+function processTouches(e) {
+    if (gameState === STATE_GAMEOVER) { resetGame(); return; }
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    mobileControls.left = false; mobileControls.right = false;
+
+    for (let i = 0; i < e.touches.length; i++) {
+        const touch = e.touches[i];
+        const touchX = ((touch.clientX - rect.left) / rect.width) * canvas.width;
+        const touchY = ((touch.clientY - rect.top) / rect.height) * canvas.height;
+
+        if (touchY > 280) {
+            if (touchX < 400) mobileControls.left = true;
+            else mobileControls.right = true;
+        }
+    }
+}
+
+canvas.addEventListener('touchstart', processTouches, { passive: false });
+canvas.addEventListener('touchmove', processTouches, { passive: false });
+canvas.addEventListener('touchend', processTouches, { passive: false });
+canvas.addEventListener('touchcancel', processTouches, { passive: false });
+
+let bullets = []; let items = []; let hazards = []; let particles = []; let stars = [];
+let spawnCounter = 0; let timeScale = 1.0;
+
+function generateStarfield() {
+    stars = [];
+    for (let i = 0; i < 45; i++) {
+        stars.push({
+            x: Math.random() * canvas.width, y: Math.random() * canvas.height,
+            size: Math.random() * 5 + 3, twinkleSpeed: 0.02 + Math.random() * 0.04, alpha: Math.random()
+        });
+    }
+}
+generateStarfield();
+
+function resetGame() {
+    player.x = 400; player.bananas = 0; player.score = 0; player.lives = 3;
+    player.form = "MONKEY"; player.fireCooldown = 0; timeScale = 1.0;
+    bullets = []; items = []; hazards = []; particles = [];
+    mobileControls.left = false; mobileControls.right = false;
+    generateStarfield();
+    gameState = STATE_PLAYING;
+}
+
+function spawnHazard() {
+    const baseInterval = Math.max(14, 48 - Math.floor(player.score / 30));
+    if (spawnCounter % baseInterval === 0) {
+        let isHorizontal = Math.random() < 0.6;
+        // Adjusted bounding boxes to match the long baguette aspect ratio
+        let w = isHorizontal ? 85 : 32; let h = isHorizontal ? 32 : 85;
+        hazards.push({
+            x: Math.random() * (canvas.width - w), y: -90, width: w, height: h,
+            isHorizontal: isHorizontal, speed: 2.5 + Math.random() * 2.5,
+            derpEyeY1: -3 + (Math.random() * 6), derpEyeY2: -4 + (Math.random() * 8),
+            crustRotation: Math.random() * 0.15 - 0.07
+        });
+    }
+}
+
+function spawnItems() {
+    if (Math.random() < 0.025 && player.bananas < 10 && player.form === "MONKEY") {
+        items.push({ 
+            x: Math.random() * (canvas.width - 40), y: -45, width: 36, height: 36, type: "BANANA", speed: 2.2,
+            derpEyeY1: -2 + (Math.random() * 4), derpEyeY2: -3 + (Math.random() * 5)
+        });
+    }
+    if (player.bananas >= 10 && !items.some(i => i.type === "WATCH") && player.form === "MONKEY") {
+        items.push({ x: Math.random() * (canvas.width - 40), y: -40, width: 40, height: 40, type: "WATCH", speed: 1.8 });
+    }
+}
+
+function createExplosion(x, y, color, count=8) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x: x, y: y, vx: (Math.random() - 0.5) * 8, vy: (Math.random() - 0.5) * 8,
+            size: Math.random() * 7 + 4, color: color, alpha: 1
+        });
+    }
+}
+
+function checkCollision(rect1, rect2) {
+    return rect1.x < rect2.x + rect2.width && rect1.x + rect1.width > rect2.x && rect1.y < rect2.y + rect2.height && rect1.y + rect1.height > rect2.y;
+}
+
+function update() {
+    if (gameState !== STATE_PLAYING) return;
+    spawnCounter++;
+    player.animationTick++;
+
+    stars.forEach(s => {
+        s.alpha += s.twinkleSpeed;
+        if (s.alpha > 1 || s.alpha < 0) s.twinkleSpeed = -s.twinkleSpeed;
+        s.y += 0.6 * timeScale; if (s.y > canvas.height) s.y = -5;
+    });
+
+    if (keys.ArrowLeft || keys.KeyA || mobileControls.left) player.x -= player.speed;
+    if (keys.ArrowRight || keys.KeyD || mobileControls.right) player.x += player.speed;
+    
+    player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+
+    if (player.animationTick % 5 === 0) {
+        player.wheelRotation += Math.PI / 4; 
+    }
+
+    if (player.form === "LORD_OF_TIME") {
+        timeScale = 0.22; player.bananas -= 0.04; player.score += 0.15; 
+        if (player.bananas <= 0) { player.bananas = 0; player.form = "MONKEY"; }
+    } else {
+        timeScale = 1.0;
+    }
+
+    if (spawnCounter % 6 === 0) {
+        particles.push({
+            x: player.x + 16, y: player.y + player.height - 10,
+            vx: -2 - Math.random()*2, vy: Math.random()*1,
+            size: Math.random()*6 + 2, color: player.form === "LORD_OF_TIME" ? "#ffb86c" : "#ff79c6", alpha: 0.7
+        });
+    }
+
+    player.fireCooldown++;
+    if (player.fireCooldown >= player.fireRateTicks) {
+        player.fireCooldown = 0;
+        bullets.push({ x: player.x + player.width / 2 - 12, y: player.y - 12, width: 24, height: 24, speed: 6.5 });
+    }
+
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i]; b.y -= b.speed;
+        for (let j = hazards.length - 1; j >= 0; j--) {
+            let h = hazards[j];
+            if (checkCollision(b, h)) {
+                createExplosion(h.x + h.width/2, h.y + h.height/2, "#ffb86c", 9); 
+                hazards.splice(j, 1); bullets.splice(i, 1); player.score += 10; break;
+            }
+        }
+        if (b && b.y < -25) bullets.splice(i, 1);
+    }
+
+    spawnHazard(); spawnItems();
+
+    for (let i = hazards.length - 1; i >= 0; i--) {
+        let h = hazards[i]; h.y += h.speed * timeScale;
+        if (checkCollision(player, h)) {
+            createExplosion(h.x + h.width/2, h.y + h.height/2, "#ff5555", 22); hazards.splice(i, 1);
+            if (player.form === "LORD_OF_TIME") { player.bananas = Math.max(0, player.bananas - 3); } 
+            else { player.lives--; if (player.lives <= 0) gameState = STATE_GAMEOVER; }
+            continue;
+        }
+        if (h.y > canvas.height) hazards.splice(i, 1);
+    }
+
+    for (let i = items.length - 1; i >= 0; i--) {
+        let it = items[i]; it.y += it.speed * timeScale;
+        if (checkCollision(player, it)) {
+            items.splice(i, 1);
+            if (it.type === "BANANA") {
+                player.bananas = Math.min(10, player.bananas + 1); player.score += 15;
+                createExplosion(it.x + 18, it.y + 18, "#f1fa8c");
+            } else if (it.type === "WATCH") {
+                player.form = "LORD_OF_TIME"; createExplosion(it.x + 20, it.y + 20, "#ff79c6", 40);
+            }
+            continue;
+        }
+        if (it.y > canvas.height) items.splice(i, 1);
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i]; p.x += p.vx; p.y += p.vy; p.alpha -= 0.03;
+        if (p.alpha <= 0) particles.splice(i, 1);
+    }
+}
+
+function drawHeart(x, y, size) {
+    ctx.save(); ctx.fillStyle = "#ff5555"; ctx.strokeStyle = "#000"; ctx.lineWidth = 3; ctx.beginPath();
+    ctx.moveTo(x, y + size / 4);
+    ctx.quadraticCurveTo(x, y, x - size / 2, y); ctx.quadraticCurveTo(x - size, y, x - size, y + size / 3);
+    ctx.quadraticCurveTo(x - size, y + size * 2/3, x - size / 4, y + size); ctx.lineTo(x, y + size); ctx.lineTo(x + size / 4, y + size);
+    ctx.quadraticCurveTo(x + size, y + size * 2/3, x + size, y + size / 3); ctx.quadraticCurveTo(x + size, y, x + size / 2, y);
+    ctx.quadraticCurveTo(x, y, x, y + size / 4); ctx.fill(); ctx.stroke(); ctx.restore();
+}
+
+function draw() {
+    ctx.fillStyle = player.form === "LORD_OF_TIME" ? "#212030" : "#0c0b1e";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    stars.forEach(s => {
+        ctx.fillStyle = player.form === "LORD_OF_TIME" ? `rgba(255, 121, 198, ${s.alpha})` : `rgba(139, 233, 253, ${s.alpha})`;
+        ctx.fillRect(Math.floor(s.x), Math.floor(s.y), s.size, s.size);
+    });
+
+    // MOBILE INPUT BOXES
+    ctx.save(); ctx.globalAlpha = 0.05; ctx.fillStyle = "#ff79c6"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.fillRect(0, 380, 160, 220); ctx.strokeRect(0, 380, 160, 220);
+    ctx.fillRect(canvas.width - 160, 380, 160, 220); ctx.strokeRect(canvas.width - 160, 380, 160, 220);
+    ctx.globalAlpha = 0.15; ctx.fillStyle = "#fff"; ctx.font = "bold 14px Arial";
+    ctx.fillText("◀ SHIFT LEFT", 30, 500); ctx.fillText("SHIFT RIGHT ▶", canvas.width - 135, 500);
+    ctx.restore();
+
+    // 💩 HIGHLY DISCERNIBLE COIL SWIRL POOP BULLETS WITH FACES
+    bullets.forEach(b => {
+        ctx.save(); ctx.translate(b.x + b.width/2, b.y + b.height/2);
+        ctx.strokeStyle = "#000"; ctx.lineWidth = 3; ctx.fillStyle = "#8a5a36"; // Rich brown cutout
+        
+        // Base tier coil
+        ctx.beginPath(); ctx.ellipse(0, 6, 12, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        // Middle tier coil
+        ctx.beginPath(); ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        // Top pointy swirl tier
+        ctx.beginPath(); ctx.moveTo(-5, -3); ctx.quadraticCurveTo(0, -12, 0, -14); ctx.quadraticCurveTo(2, -10, 5, -3); ctx.closePath(); ctx.fill(); ctx.stroke();
+        
+        // Googly Eyes
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.arc(-3, 0, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(3, 0, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#000";
+        ctx.fillRect(-3.5, -0.5, 1.5, 1.5); ctx.fillRect(2.5, -1, 1.5, 1.5);
+        
+        // Cute paper line smile
+        ctx.beginPath(); ctx.arc(0, 3, 2, 0, Math.PI); ctx.stroke();
+        ctx.restore();
+    });
+
+    // 🥖 REALISTIC CUTOUT BAGUETTES WITH DERP FACES
+    hazards.forEach(h => {
+        ctx.save(); ctx.translate(h.x + h.width/2, h.y + h.height/2);
+        ctx.rotate(h.crustRotation);
+        ctx.strokeStyle = "#000"; ctx.lineWidth = 3; 
+        
+        // Draw elongated baguette crust path with rounded caps
+        ctx.fillStyle = "#d08b47"; // Golden crust
+        ctx.beginPath(); ctx.roundRect(-h.width/2, -h.height/2, h.width, h.height, 14); ctx.fill(); ctx.stroke();
+        
+        // Inner bread accent
+        ctx.fillStyle = "#f3d19e"; 
+        ctx.beginPath(); ctx.roundRect(-h.width/2 + 5, -h.height/2 + 5, h.width - 10, h.height - 10, 10); ctx.fill();
+        
+        // Diagonal scoring marks across bread cuts
+        ctx.strokeStyle = "#a26227"; ctx.lineWidth = 3;
+        if (h.isHorizontal) {
+            ctx.beginPath(); ctx.moveTo(-25, -8); ctx.lineTo(-15, 8); ctx.moveTo(-5, -8); ctx.lineTo(5, 8); ctx.moveTo(15, -8); ctx.lineTo(25, 8); ctx.stroke();
+        } else {
+            ctx.beginPath(); ctx.moveTo(-8, -25); ctx.lineTo(8, -15); ctx.moveTo(-8, -5); ctx.lineTo(8, 5); ctx.moveTo(-8, 15); ctx.lineTo(8, 25); ctx.stroke();
+        }
+
+        // Re-establish black for eyes
+        ctx.strokeStyle = "#000"; ctx.lineWidth = 3.5;
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.arc(-6, -2 + h.derpEyeY1, 6.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(5, -1 + h.derpEyeY2, 6.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#000";
+        ctx.beginPath(); ctx.arc(-8, -2 + h.derpEyeY1, 1.8, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(6, -3 + h.derpEyeY2, 1.8, 0, Math.PI * 2); ctx.fill();
+        
+        // Squiggly wavy face line
+        ctx.beginPath(); ctx.arc(0, 5, 3, 0, Math.PI); ctx.stroke();
+        ctx.restore();
+    });
+
+    // 🍌 BOLD CURVED BANANAS WITH DERP FACES
+    items.forEach(it => {
+        ctx.save(); ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
+        if (it.type === "BANANA") {
+            ctx.translate(it.x + it.width/2, it.y + it.height/2); 
+            
+            // Draw clear crescent banana layout
+            ctx.fillStyle = "#ffd43b"; 
+            ctx.beginPath(); 
+            ctx.arc(-8, 0, 15, -Math.PI/2, Math.PI/1.6, false);
+            ctx.arc(-8, 0, 9, Math.PI/1.6, -Math.PI/2, true);
+            ctx.closePath(); ctx.fill(); ctx.stroke();
+            
+            // Small brown tips
+            ctx.fillStyle = "#6d4c41"; ctx.fillRect(-11, -16, 4, 3);
+            
+            // Asymmetric Derp face layered right onto skin
+            ctx.fillStyle = "#fff";
+            ctx.beginPath(); ctx.arc(-6, -1 + it.derpEyeY1, 4.5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+            ctx.beginPath(); ctx.arc(1, -3 + it.derpEyeY2, 4.5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+            ctx.fillStyle = "#000"; 
+            ctx.beginPath(); ctx.arc(-7, -1 + it.derpEyeY1, 1.2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(2, -3 + it.derpEyeY2, 1.2, 0, Math.PI*2); ctx.fill();
+        } else if (it.type === "WATCH") {
+            ctx.translate(it.x + 20, it.y + 20); ctx.fillStyle = "#ff79c6"; ctx.fillRect(-6, -20, 12, 40); ctx.strokeRect(-6, -20, 12, 40);
+            ctx.beginPath(); ctx.arc(0, 0, 16, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); 
+            ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -7); ctx.stroke();
+        }
+        ctx.restore();
+    });
+
+    // Particles
+    particles.forEach(p => {
+        ctx.save(); ctx.globalAlpha = p.alpha; ctx.fillStyle = p.color;
+        ctx.fillRect(Math.floor(p.x), Math.floor(p.y), p.size || 5, p.size || 5); ctx.restore();
+    });
+
+    // 🐵 SOUTH PARK CUTOUT MONKEY HERO
+    ctx.save(); ctx.translate(player.x, player.y); ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
+
+    ctx.fillStyle = "#50fa7b"; ctx.beginPath(); ctx.roundRect(10, 32, 44, 16, 4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#ff79c6"; ctx.beginPath(); ctx.roundRect(22, 22, 18, 10, 2); ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = "#282a36"; 
+    ctx.beginPath(); ctx.arc(14, 46, 12, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(50, 46, 12, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#6272a4";
+    ctx.beginPath(); ctx.arc(14, 46, 4, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(50, 46, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(14 + Math.cos(player.wheelRotation)*6 - 2, 46 + Math.sin(player.wheelRotation)*6 - 2, 4, 4);
+    ctx.fillRect(50 + Math.cos(player.wheelRotation + Math.PI/2)*6 - 2, 46 + Math.sin(player.wheelRotation + Math.PI/2)*6 - 2, 4, 4);
+
+    // Cute Big Rounded Cutout Ears
+    ctx.fillStyle = "#ffb86c";
+    ctx.beginPath(); ctx.arc(14, 8, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke(); 
+    ctx.beginPath(); ctx.arc(50, 8, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke(); 
+    ctx.fillStyle = "#ff79c6"; 
+    ctx.beginPath(); ctx.arc(14, 8, 5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(50, 8, 5, 0, Math.PI*2); ctx.fill();
+
+    ctx.fillStyle = "#ffb86c"; 
+    ctx.beginPath(); ctx.arc(32, 24, 10, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(32, 9, 13, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#ffced2"; 
+    ctx.beginPath(); ctx.arc(32, 11, 9, 0, Math.PI*2); ctx.fill();
+
+    // Oversized interlocking eyes
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(27, 7, 6.5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(37, 7, 6.5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.arc(29, 8, 1.8, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(35, 6, 1.8, 0, Math.PI*2); ctx.fill();
+
+    ctx.beginPath(); ctx.arc(32, 13, 2.5, 0, Math.PI); ctx.stroke();
+
+    ctx.strokeStyle = "#ffb86c"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(22, 26); ctx.quadraticCurveTo(6, 22, 6, 12); ctx.stroke();
+
+    if (player.form === "LORD_OF_TIME") {
+        ctx.fillStyle = player.animationTick % 8 < 4 ? "#f1fa8c" : "#ffb86c"; 
+        ctx.beginPath();
+        ctx.moveTo(16, 1); ctx.lineTo(2, -24); ctx.lineTo(22, -12); ctx.lineTo(32, -36); ctx.lineTo(42, -12); ctx.lineTo(62, -24); ctx.lineTo(48, 1); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+
+    // HUD STAGE MANAGEMENT
+    for (let i = 0; i < player.maxLives; i++) {
+        if (i < player.lives) drawHeart(35 + (i * 32), 35, 14);
+    }
+
+    ctx.fillStyle = "#fff"; ctx.font = "bold 18px Arial";
+    ctx.fillText(`SCORE: ${Math.floor(player.score)}`, 20, 80);
+    
+    if (player.form === "MONKEY") {
+        ctx.fillStyle = player.bananas >= 10 ? "#ff79c6" : "#f1fa8c";
+        ctx.fillText(`BANANAS: ${Math.floor(player.bananas)}/10`, canvas.width - 200, 40);
+    } else {
+        ctx.fillStyle = "#ff79c6"; ctx.fillText(`MATRIX: ${Math.ceil(player.bananas)}`, canvas.width - 160, 40);
+    }
+
+    // 🌟 SILLY SOUTH PARK GAME OVER POPUP BLOCK
+    if (gameState === STATE_GAMEOVER) {
+        ctx.fillStyle = "rgba(10, 8, 22, 0.96)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Massive thick black cutout warning plate
+        ctx.fillStyle = "#ff5555"; ctx.strokeStyle = "#000"; ctx.lineWidth = 6;
+        ctx.fillRect(80, 100, 640, 380); ctx.strokeRect(80, 100, 640, 380);
+        
+        // Flat white accent card inside
+        ctx.fillStyle = "#fff"; ctx.fillRect(100, 120, 600, 340); ctx.strokeRect(100, 120, 600, 340);
+
+        ctx.fillStyle = "#000"; ctx.font = "bold 44px Impact, Arial Black"; ctx.textAlign = "center"; 
+        ctx.fillText("BREAD COMPILATION FATALITY!", canvas.width / 2, 185);
+        
+        // Derp text metrics
+        ctx.font = "bold 20px Arial";
+        ctx.fillText("Dude, the monkey ate so much French crust, his flat", canvas.width / 2, 245);
+        ctx.fillText("paper-cutout body completely ran out of disk space.", canvas.width / 2, 275);
+        
+        ctx.fillStyle = "#ff79c6"; ctx.font = "bold 24px Impact, Arial Black";
+        ctx.fillText(`TOTAL GLITCH SCORE: ${Math.floor(player.score)}`, canvas.width / 2, 335);
+        
+        // Bouncing prompt highlight
+        ctx.fillStyle = (player.animationTick % 30 < 15) ? "#50fa7b" : "#ff5555";
+        ctx.font = "bold 18px 'Courier New', monospace";
+        ctx.fillText("TAP OR PRESS ANY KEY TO DISCHARGE CARBS!", canvas.width / 2, 410);
+        ctx.textAlign = "start";
+    }
+}
+
+function run() { update(); draw(); requestAnimationFrame(run); }
+run();
+</script>
+
+</body>
+</html>
